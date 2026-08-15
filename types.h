@@ -82,6 +82,7 @@ enum Disaster_E {
     DIS_FIRE,
     DIS_FLOOD,
     DIS_RIOT,
+    DIS_VANDALISM,
     DIS_BUILDING_COLLAPSE,
     DIS_ELECTRICAL_FAILURE
 };
@@ -97,7 +98,7 @@ struct Property_S {
 
     int house_construction_cost;
     int hotel_construction_cost;
-    
+
     enum PropertyType_E type;
     int current_owner;
 
@@ -115,7 +116,6 @@ struct Property_S {
     int insuarance_rounds;
 
     int closed_rounds;
-
     int is_damaged;
     int repair_cost;
     int missed_maintenance;
@@ -142,7 +142,7 @@ struct Player_S{
     int id;
     char name[32];
     enum PlayerType_E type;
-    
+
     int current_pos;
     int is_bankrupt;
     int in_jail;
@@ -169,6 +169,8 @@ struct Player_S{
     int insurance_claim_recivable;
     int taxes_due;
 
+    int suffered_loss;
+
     int net_worth;
 };
 
@@ -184,30 +186,17 @@ enum EconomicEvent_E {
     EE_POLITICAL_UNREST
 };
 
-
-struct EESnapshot_S {
-    int property_price_change[40];
-    int rent_change[40];
-    int house_construction_cost[40];
-    int hotel_construction_cost[40];
-
-    int loan_interrest_rate;
-    int flood_risk;
-    int riot_probability;
-    int business_interruption_claims;
-};
-
 struct EEMultipliers_S{
     int hotel_rent_mult;
     int south_prop_val_mult;
 
     int rail_rent_mult;
     int prop_dev_cost_mult;
-    
+
     int insurance_premium_mult;
     int coastal_prop_val_mult;
-    
-    int prop_val_mult;  
+
+    int prop_val_mult;
     int rent_mult;
     int loan_interest_mult;
 
@@ -217,8 +206,6 @@ struct EEMultipliers_S{
 
     int riot_prob_mult;
     int business_interrupt_claim_mult;
-
-    struct EESnapshot_S snapshot;
 };
 
 enum NationalEventCard_E {
@@ -245,11 +232,6 @@ enum NationalEventCard_E {
     NE_NATIONAL_DISASTER
 };
 
-struct Deck_S {
-    int cards[20];
-    int count;
-};
-
 struct NEMultipliers_S {
     int hotel_rent_mult;
     int rail_rent_mult;
@@ -258,6 +240,8 @@ struct NEMultipliers_S {
     int prop_val_mult;
     int commerce_prop_val_mult;
     int rail_val_mult;
+    int revalued_group;
+    int revalued_group_mult;
 
     int house_construct_cost_mult;
     int construct_cost_mult;
@@ -285,17 +269,18 @@ enum RegionalDevCard_E {
 
 struct RDMultipliers_S {
     int south_rent_mult;
+    int airport_rent_mult;
+
     int colombo_val_mult;
     int it_zone_val_mult;
     int north_val_mult;
     int hill_val_mult;
-    int airport_rent_mult;
     int kandy_val_mult;
-
     int coastal_val_mult;
+    int water_area_val_mult;
+
     int rail_rent_mult;
     int util_rent_mult;
-    int water_area_val_mult;
 };
 
 enum GovRegulation_E {
@@ -308,6 +293,11 @@ enum GovRegulation_E {
     GR_ELEC_TARRIF_REVISION,
     GR_INSURANCE_REGULATION,
     GR_ANTI_SPECULATION_ACT
+};
+
+struct Deck_S {
+    int cards[20];
+    int count;
 };
 
 struct GameState_S {

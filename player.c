@@ -1,14 +1,19 @@
+#include "player.h"
 #include "types.h"
 #include "game.h"
+#include "board.h"
 #include "strat.h"
-#include "player.h"
 #include "events.h"
+#include "finance.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 
 
+/*
+sets a player back to the starting state
+*/
 void player_init(struct Player_S *player, int id, enum PlayerType_E type, const char *name) {
     player->id = id;
     strncpy(player->name, name, sizeof(player->name) - 1);
@@ -29,6 +34,7 @@ void player_init(struct Player_S *player, int id, enum PlayerType_E type, const 
     player->loan_round_remaining = 0;
 
     player->railway_owned = 0;
+    player->util_owned = 0;
     player->property_owned = 0;
     player->hotels_owned = 0;
 
@@ -39,95 +45,68 @@ void player_init(struct Player_S *player, int id, enum PlayerType_E type, const 
     player->insurance_claim_recivable = 0;
     player->taxes_due = 0;
 
+    player->suffered_loss = 0;
+
     player->net_worth = 0;
 }
 
 
-void player_move(struct Monopoly_S *monopoly) {
-    struct Player_S *player = &monopoly->players[monopoly->game_state.current_player];
-    int d1 = roll_dice();
-    int d2 = roll_dice();
-    int dice = d1 + d2;
-    int is_double = (d1 == d2);
-
-    if (player->in_jail) {
-        if (player->jail_turns == 0){
-            player->in_jail = 0;
-            printf("%s left Jail after 3 turns.\n\n", player->name);
-        }
-        else if(is_double) {
-            player->in_jail = 0;
-            player->jail_turns = 0;
-            printf("%s rolled doubles and left Jail.\n\n", player->name);
-        }    
-        else if (player->cash >= 300) {
-            player->in_jail = 0;
-            player->jail_turns = 0;
-            printf("%s paid bail of LKR 300.\n\n", player->name);
-        }
-        else {
-            player->jail_turns--;
-            return; 
-        }
-    }
-
-    int current_pos = player->current_pos;
-    int new_pos = (player->current_pos + dice) % 40;
-    printf("%s rolled %d.\n", player->name, dice);
-    printf("%s moved from Square %d to square %d.\n", player->name, player->current_pos, new_pos);
-
-    if (current_pos + dice >= 40) {
-        player->passed_go++;
-        player->cash += 2000;
-        printf("%s passed GO\n", player->name);
-        printf("Collected LKR 2000.\n");
-        printf("Current Balance : LKR %d.\n", player->cash);
-    }
-    player->current_pos = new_pos;
-}
-
-
+/*
+buys the square the current player stands on
+*/
 void player_buy_property(struct Monopoly_S *monopoly) {
     struct Player_S *player = &monopoly->players[monopoly->game_state.current_player];
     struct Square_S *sq = &monopoly->board[player->current_pos];
-    printf("%s purchased %s for LKR %d\n", player->name, sq->name, sq->properties.purchase_price);
-    player->cash -= sq->properties.purchase_price;
-    printf("Remaining Balance : LKR %d\n", player->cash);
+
+    int price = sq->properties.purchase_price;
+    player->cash -= price;
     sq->properties.current_owner = player->id;
     player->property_owned++;
+
+    printf("%s purchased %s for LKR %d.\n", player->name, sq->name, price);
+    printf("Remaining Balance : LKR %d.\n", player->cash);
 }
 
 
+/*
+pays property rent to the owner of the square landed on
+*/
 void player_property_pay_rent(struct Monopoly_S *monopoly) {
     struct Player_S *player = &monopoly->players[monopoly->game_state.current_player];
-    struct Property_S *prop = &monopoly->board[player->current_pos].properties;
+    struct Square_S *sq = &monopoly->board[player->current_pos];
+    struct Property_S *prop = &sq->properties;
     struct Player_S *owner = &monopoly->players[prop->current_owner];
 
-    if (prop->closed_rounds > 0) {
-        printf("%s is closed. No rent collected.\n", monopoly->board[player->current_pos].name);
+    if (prop->is_mortaged) {
+        printf("%s is mortgaged. No rent collected.\n", sq->name);
         return;
     }
 
-    int rent_multiplier = 1;
+    if (prop->closed_rounds > 0) {
+        printf("%s is closed. No rent collected.\n", sq->name);
+        return;
+    }
+
+    if (prop->is_damaged) {
+        printf("%s is damaged. No rent collected.\n", sq->name);
+        return;
+    }
+
+    int rent = prop->current_rent;
     switch (prop->house_count) {
-        case 1: rent_multiplier = 2; break;
-        case 2: rent_multiplier = 3; break;
-        case 3: rent_multiplier = 5; break;
-        case 4: rent_multiplier = 7; break;
+        case 1: rent = prop->current_rent * 2; break;
+        case 2: rent = prop->current_rent * 3; break;
+        case 3: rent = prop->current_rent * 5; break;
+        case 4: rent = prop->current_rent * 7; break;
     }
 
-    int rent = prop->current_rent * rent_multiplier;
-    rent = rent * monopoly->game_state.ee_mult.rent_mult / 100;
-    rent = rent * property_rent_mult(monopoly, player->current_pos) / 100;
-
-    if (prop->hotel_count == 1)  {
+    if (prop->hotel_count == 1) {
         rent = prop->current_rent * 10;
-        rent = rent * monopoly->game_state.ee_mult.hotel_rent_mult / 100;
-        rent = rent * property_rent_mult(monopoly, player->current_pos) / 100;
-        if (owner->id == monopoly->game_state.national_event_player) {
-            rent = rent * monopoly->game_state.ne_mult.hotel_rent_mult / 100;
-        }
+        rent = rent * event_hotel_rent_mult(monopoly, owner) / 100;
     }
+
+    rent = rent * event_rent_mult(monopoly, sq) / 100;
+    rent = rent * (100 - prop->depreciation_precent) / 100;
 
     int avg_condition = 100;
     if (prop->house_count > 0) {
@@ -137,9 +116,7 @@ void player_property_pay_rent(struct Monopoly_S *monopoly) {
         }
         avg_condition /= prop->house_count;
     }
-    if (prop->hotel_count == 1){
-        avg_condition = prop->hotel_condition;
-    }
+    if (prop->hotel_count == 1) avg_condition = prop->hotel_condition;
 
     int condition_multiplier = 100;
     if (avg_condition >= 90) condition_multiplier = 100;
@@ -149,12 +126,14 @@ void player_property_pay_rent(struct Monopoly_S *monopoly) {
     else condition_multiplier = 0;
 
     rent = rent * condition_multiplier / 100;
-
+    if (rent <= 0) {
+        printf("%s is closed for maintenance. No rent collected.\n", sq->name);
+        return;
+    }
 
     if (player->cash < rent) {
         int required = rent - player->cash;
-        int raised = attempt_raise_cash(monopoly, required);
-        if (raised == 0) {
+        if (attempt_raise_cash(monopoly, required) == 0) {
             eliminate_player(monopoly, player);
             return;
         }
@@ -163,118 +142,136 @@ void player_property_pay_rent(struct Monopoly_S *monopoly) {
     player->cash -= rent;
     owner->cash += rent;
 
-    printf("Rent Paid : LKR %d\n", rent);
-    printf("Owner : %s\n", owner->name);
+    printf("Rent Paid : LKR %d.\n", rent);
+    printf("Owner : %s.\n", owner->name);
 }
 
 
+/*
+buys the railway or utility the current player stands on
+*/
 void player_buy_util_railway(struct Monopoly_S *monopoly) {
     struct Player_S *player = &monopoly->players[monopoly->game_state.current_player];
     struct Square_S *sq = &monopoly->board[player->current_pos];
-    printf("%s purchased %s for LKR %d\n", player->name, sq->name, sq->properties.purchase_price);
-    player->cash -= sq->properties.purchase_price;
-    printf("Remaining Balance : LKR %d\n", player->cash);
+
+    int price = sq->properties.purchase_price;
+    player->cash -= price;
     sq->properties.current_owner = player->id;
-    player->railway_owned++;
+
+    if (sq->type == ST_RAILWAY) player->railway_owned++;
+    else player->util_owned++;
+
+    printf("%s purchased %s for LKR %d.\n", player->name, sq->name, price);
+    printf("Remaining Balance : LKR %d.\n", player->cash);
 }
 
 
+/*
+pays railway rent based on how many stations the owner holds
+*/
 void player_railway_pay_rent(struct Monopoly_S *monopoly) {
     struct Player_S *player = &monopoly->players[monopoly->game_state.current_player];
-    struct Property_S *rail = &monopoly->board[player->current_pos].properties;
+    struct Square_S *sq = &monopoly->board[player->current_pos];
+    struct Property_S *rail = &sq->properties;
     struct Player_S *owner = &monopoly->players[rail->current_owner];
 
+    if (rail->is_mortaged) {
+        printf("%s is mortgaged. No rent collected.\n", sq->name);
+        return;
+    }
+
     int rent = 0;
-    switch(owner->railway_owned) {
+    switch (owner->railway_owned) {
         case 1: rent =  250; break;
         case 2: rent =  500; break;
         case 3: rent = 1000; break;
         case 4: rent = 2000; break;
     }
 
-    rent = rent * monopoly->game_state.ee_mult.rail_rent_mult / 100;
-    rent = rent * monopoly->game_state.rd_mult.rail_rent_mult / 100;
-    if (monopoly->game_state.active_gov_reg == GR_RAILWAY_MODERNIZATION) rent = rent * 125 / 100;
-    if (owner->id == monopoly->game_state.national_event_player) {
-        rent = rent * monopoly->game_state.ne_mult.rail_rent_mult / 100;
-    }
+    rent = rent * event_rail_rent_mult(monopoly, owner) / 100;
 
     if (player->cash < rent) {
         int required = rent - player->cash;
-        int raised = attempt_raise_cash(monopoly, required);
-        if (raised == 0) {
+        if (attempt_raise_cash(monopoly, required) == 0) {
             eliminate_player(monopoly, player);
             return;
         }
     }
 
-    
     player->cash -= rent;
     owner->cash += rent;
 
-    printf("Rent Paid : LKR %d\n", rent);
-    printf("Owner : %s\n", owner->name);
+    printf("Rent Paid : LKR %d.\n", rent);
+    printf("Owner : %s.\n", owner->name);
 }
 
 
+/*
+pays utility rent based on the dice value
+*/
 void player_util_pay_rent(struct Monopoly_S *monopoly) {
     struct Player_S *player = &monopoly->players[monopoly->game_state.current_player];
-    struct Property_S *util = &monopoly->board[player->current_pos].properties;
+    struct Square_S *sq = &monopoly->board[player->current_pos];
+    struct Property_S *util = &sq->properties;
     struct Player_S *owner = &monopoly->players[util->current_owner];
 
+    if (util->is_mortaged) {
+        printf("%s is mortgaged. No rent collected.\n", sq->name);
+        return;
+    }
+
     int rent = 0;
-    switch(owner->util_owned) {
+    switch (owner->util_owned) {
         case 1: rent =  4 * (roll_dice() + roll_dice()); break;
         case 2: rent = 10 * (roll_dice() + roll_dice()); break;
     }
 
-    rent = rent * monopoly->game_state.rd_mult.util_rent_mult / 100;
-    if (monopoly->game_state.active_gov_reg == GR_ELEC_TARRIF_REVISION) rent = rent * 120 / 100;
-    if (owner->id == monopoly->game_state.national_event_player) {
-        rent = rent * monopoly->game_state.ne_mult.util_income_mult / 100;
-    }
+    rent = rent * event_util_rent_mult(monopoly, owner) / 100;
 
     if (player->cash < rent) {
         int required = rent - player->cash;
-        int raised = attempt_raise_cash(monopoly, required);
-        if (raised == 0) {
+        if (attempt_raise_cash(monopoly, required) == 0) {
             eliminate_player(monopoly, player);
             return;
         }
     }
-    
+
     player->cash -= rent;
     owner->cash += rent;
 
-    printf("Rent Paid : LKR %d\n", rent);
-    printf("Owner : %s\n", owner->name);
+    printf("Rent Paid : LKR %d.\n", rent);
+    printf("Owner : %s.\n", owner->name);
 }
 
 
+/*
+sends the current player to jail for 3 turns
+*/
 void player_go_to_jail(struct Monopoly_S *monopoly) {
     struct Player_S *player = &monopoly->players[monopoly->game_state.current_player];
+
     player->current_pos = BOARD_JAIL_VISITING;
     player->in_jail = 1;
     player->jail_turns = 3;
-    
+
+    printf("%s was sent to Jail.\n", player->name);
 }
 
 
+/*
+builds one house on a square
+*/
 void player_develop_house(struct Monopoly_S *monopoly, struct Square_S *sq) {
     struct Player_S *player = &monopoly->players[monopoly->game_state.current_player];
 
     int dev_cost = sq->properties.house_construction_cost;
-    dev_cost = dev_cost * monopoly->game_state.ee_mult.prop_dev_cost_mult / 100;
-    dev_cost = dev_cost * monopoly->game_state.ee_mult.house_contruct_cost_mult / 100;
-    if (player->id == monopoly->game_state.national_event_player) {
-        dev_cost = dev_cost * monopoly->game_state.ne_mult.house_construct_cost_mult / 100;
-        dev_cost = dev_cost * monopoly->game_state.ne_mult.construct_cost_mult / 100;
-    }
-    if (monopoly->game_state.active_gov_reg == GR_HOUSING_SUBSIDY) dev_cost = dev_cost * 70 / 100;
+    dev_cost = dev_cost * event_house_cost_mult(monopoly, player) / 100;
+    if (dev_cost > player->cash) return;
 
     player->cash -= dev_cost;
     sq->properties.house_count++;
-    
+    sq->properties.house_condition[sq->properties.house_count - 1] = 100;
+
     printf("%s constructed ", player->name);
     switch (sq->properties.house_count) {
         case 1: printf("one house");    break;
@@ -282,175 +279,46 @@ void player_develop_house(struct Monopoly_S *monopoly, struct Square_S *sq) {
         case 3: printf("three houses"); break;
         case 4: printf("four houses");  break;
     }
-    printf(" on %s, %d\n", sq->name, dev_cost);
+    printf(" on %s.\n", sq->name);
+    printf("Construction Cost : LKR %d.\n", dev_cost);
 }
 
 
+/*
+replaces four houses with a hotel
+*/
 void player_develop_hotel(struct Monopoly_S *monopoly, struct Square_S *sq) {
     struct Player_S *player = &monopoly->players[monopoly->game_state.current_player];
 
     int dev_cost = sq->properties.hotel_construction_cost;
-    dev_cost = dev_cost * monopoly->game_state.ee_mult.prop_dev_cost_mult / 100;
-    if (player->id == monopoly->game_state.national_event_player) {
-        dev_cost = dev_cost * monopoly->game_state.ne_mult.construct_cost_mult / 100;
-    }
+    dev_cost = dev_cost * event_hotel_cost_mult(monopoly, player) / 100;
+    if (dev_cost > player->cash) return;
 
     player->cash -= dev_cost;
     sq->properties.house_count = 0;
     sq->properties.hotel_count = 1;
+    sq->properties.hotel_condition = 100;
     player->hotels_owned++;
 
-    printf("%s upgraded %s to a Hotel, %d\n", player->name, sq->name, dev_cost);
-
+    printf("%s upgraded %s to a Hotel.\n", player->name, sq->name);
+    printf("Construction Cost : LKR %d.\n", dev_cost);
 }
 
-
-int player_max_loan_amount(struct Monopoly_S *monopoly, struct Player_S *player) {
-    struct Square_S *board = monopoly->board;
-
-    int mortgadge_val = 0;
-
-    for (int i = 0 ; i < 40; i++) {
-        struct Square_S *sq = &board[i];
-        if (sq->type == ST_PROPERTY || sq->type == ST_RAILWAY || sq->type == ST_UTILITY) {
-            if (sq->properties.current_owner != player->id) continue;
-            if (sq->properties.is_mortaged) continue;
-            mortgadge_val += sq->properties.mortgage_val;
-        }
-    }
-
-    int max_loan = mortgadge_val * 75 / 100;
-    return max_loan;
-}
-
-
-void player_renovate_property(struct Monopoly_S *monopoly) {
-    struct Player_S *player = &monopoly->players[monopoly->game_state.current_player];
-    struct Square_S *sq = &monopoly->board[player->current_pos];
-    struct Property_S *property = &sq->properties;
-
-    int ren_cost = property->purchase_price / 10;
-    player->cash -= ren_cost;
-    property->depreciation_precent = 0;
-    printf("AGE: %d - ", property->property_age);
-    property->property_age = 0;
-    printf("%s renovated %s for LKR %d.\n", player->name, sq->name, ren_cost);
-}
-
-
-void player_pay_taxes(struct Monopoly_S *monopoly) {
-    struct Player_S *player = &monopoly->players[monopoly->game_state.current_player];
-
-    calc_networth(monopoly);
-    int total_assests = player->cash + player->property_val + player->utilitty_val + player->railway_val;
-    int tax_rate = monopoly->game_state.income_tax_rate;
-    int tax = total_assests * tax_rate / 100;    
-
-    if (player->cash < tax) {
-        int required = tax - player->cash;
-        int raised = attempt_raise_cash(monopoly, required);
-        if (raised == 0) {
-            eliminate_player(monopoly, player);
-            return;
-        }
-    }
-    // pay logic
-    player->cash -= tax;
-    printf("%s payed LKR %d in taxes.\n", player->name, tax);
-}   
-
-
-void  player_pay_community_fund(struct Monopoly_S *monopoly) {
-    struct Player_S *player = &monopoly->players[monopoly->game_state.current_player];
-
-    calc_networth(monopoly);
-    int total_assests = player->cash + player->property_val + player->utilitty_val + player->railway_val;
-    int tax_rate = monopoly->game_state.community_dev_fund_tax_rate;
-    int tax = total_assests * tax_rate / 100;   
-    
-    if (player->cash < tax) {
-        int required = tax - player->cash;
-        int raised = attempt_raise_cash(monopoly, required);
-        if (raised == 0) {
-            eliminate_player(monopoly, player);
-            return;
-        }
-    }
-
-    // pay logic
-    player->cash -= tax;
-    printf("%s payed LKR %d in community funds.\n", player->name, tax);
-}
 
 /*
-0- not possible
-else -  the amount raised
+declares a player bankrupt and returns every asset to the bank
 */
-int attempt_raise_cash(struct Monopoly_S *monopoly, int required_min) {
-    struct Player_S *player = &monopoly->players[monopoly->game_state.current_player];
-    if (player->property_owned == 0 && player->railway_owned == 0 && player->util_owned == 0) return 0;
-
-
-    struct Property_S *min_property = NULL;
-    struct Square_S *min_sq = NULL;
-    struct Square_S *board = monopoly->board;
-    for (int i = 0; i < 40; i++) {
-        if (board[i].type != ST_PROPERTY && board[i].type != ST_RAILWAY && board[i].type != ST_UTILITY) continue;
-        struct Property_S *property = &board[i].properties;
-        if (property->current_owner != player->id) continue;   
-        
-        if (min_property == NULL) {
-            if (property->purchase_price / 2 >= required_min) {
-                min_property = property;
-                min_sq = &board[i];
-                continue;
-            }
-            else continue;
-        }
-        
-        if (property->purchase_price / 2 < min_property->purchase_price / 2) {
-            min_property = property;
-            min_sq = &board[i];
-            continue;
-        }
-    }
-    if (min_property == NULL) return 0;
-    
-    int selling_price = min_property->purchase_price / 2;
-    player->cash += selling_price;
-    switch(min_sq->type) {
-        case ST_PROPERTY: 
-            if (player->property_owned > 0) player->property_owned--; 
-            break;
-        case ST_RAILWAY:  
-            if (player->railway_owned > 0) player->railway_owned--;  
-            break;
-        case ST_UTILITY:   
-            if (player->util_owned > 0) player->util_owned--;     
-            break;
-        default: break;
-    }
-    min_property->current_owner = PL_NONE;
-    
-    min_property->house_count = 0;
-    for (int i = 0; i < 4; i++) min_property->house_condition[i] = 100;
-    min_property->hotel_condition = 0;
-    min_property->hotel_condition = 0;
-    
-    printf("%s sold %s for LKR %d.\n", player->name, min_sq->name, selling_price);
-    return selling_price;
-    
-}
-
-
 void eliminate_player(struct Monopoly_S *monopoly, struct Player_S *player) {
-    if (player->is_bankrupt) return; // Prevent double elimination
+    struct Square_S *board = monopoly->board;
+
+    if (player->is_bankrupt) return;
 
     player->is_bankrupt = 1;
     player->cash = 0;
     player->has_active_loan = 0;
     player->loan_amount = 0;
     player->accrued_interest = 0;
+    player->loan_round_remaining = 0;
     player->railway_owned = 0;
     player->util_owned = 0;
     player->property_owned = 0;
@@ -460,41 +328,37 @@ void eliminate_player(struct Monopoly_S *monopoly, struct Player_S *player) {
     printf("%s has been declared bankrupt.\n", player->name);
     printf("Remaining assets transferred to the Bank.\n");
 
-    struct Square_S *board = monopoly->board;
-    
-    // Store properties to auction after state cleanup
-    int properties_to_auction[40];
+    int to_auction[40];
     int auction_count = 0;
 
     for (int i = 0; i < 40; i++) {
         struct Square_S *sq = &board[i];
         if (sq->type != ST_PROPERTY && sq->type != ST_RAILWAY && sq->type != ST_UTILITY) continue;
         struct Property_S *property = &sq->properties;
+        if (property->current_owner != player->id) continue;
 
-        if (property->current_owner == player->id) {
-            // Reset property attributes
-            for (int j = 0; j < 4; j++) property->house_condition[j] = 100;
-            property->hotel_condition = 100;
-            property->house_count = 0;
-            property->hotel_count = 0;
-            property->is_mortaged = 0;
-            property->is_loan_locked = 0;   
-            property->insurance_type = INS_NONE;
-            property->insuarance_rounds = 0;
-            property->closed_rounds = 0;
-            
-            property->current_owner = PL_NONE;
+        for (int j = 0; j < 4; j++) property->house_condition[j] = 100;
+        property->hotel_condition = 100;
+        property->house_count = 0;
+        property->hotel_count = 0;
+        property->is_mortaged = 0;
+        property->is_loan_locked = 0;
+        property->is_damaged = 0;
+        property->repair_cost = 0;
+        property->missed_maintenance = 0;
+        property->maintenance_cost_mult = 100;
+        property->closed_rounds = 0;
+        property->insurance_type = INS_NONE;
+        property->insuarance_rounds = 0;
+        property->current_owner = PL_NONE;
 
-            // Queue for auction
-            properties_to_auction[auction_count++] = i;
-        }
+        to_auction[auction_count++] = i;
     }
 
     monopoly->game_state.bankrupt_count++;
 
-    // Auction properties AFTER player state is fully cleared
-    for (int k = 0; k < auction_count; k++) {
-        auction(monopoly, &board[properties_to_auction[k]]);
+    for (int i = 0; i < auction_count; i++) {
+        auction(monopoly, &board[to_auction[i]]);
         putchar('\n');
     }
 }
